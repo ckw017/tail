@@ -292,10 +292,10 @@ func (tail *Tail) readLine() (string, error) {
 // of the string is discarded. Also returns a boolean indicating whether the
 // line was truncated
 func (tail *Tail) readOrTruncateLine(limit int) (string, bool, error) {
-	var bytesread int       // Number of bytes read so far
-	var full [][]byte       // All fragments read so far
-	var reachednewline bool // Whether we reached a newline
-	var truncated bool      // Whether the length of the line exceeded the limit
+	var bytesread int  // Number of bytes read so far
+	var full [][]byte  // All fragments read so far
+	var eol bool       // Whether we reached the end of the line
+	var truncated bool // Whether the length of the line exceeded the limit
 	var err error
 
 	tail.lk.Lock()
@@ -319,7 +319,7 @@ func (tail *Tail) readOrTruncateLine(limit int) (string, bool, error) {
 		full = append(full, buf)
 
 		if e == nil {
-			reachednewline = true
+			eol = true
 			break
 		}
 		if e != bufio.ErrBufferFull { // unexpected error
@@ -327,7 +327,7 @@ func (tail *Tail) readOrTruncateLine(limit int) (string, bool, error) {
 			break
 		}
 	}
-	if err == nil && !reachednewline {
+	if err == nil && !eol {
 		// Discard the remainder of the line if there were no unexpected errors
 		// in the previous section
 		_, e := tail.reader.ReadBytes('\n')
