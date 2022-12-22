@@ -65,10 +65,10 @@ type Config struct {
 	RateLimiter *ratelimiter.LeakyBucket
 
 	// Generic IO
-	Follow           bool // Continue looking for new lines (tail -f)
-	MaxLineSize      int  // If non-zero, split longer lines into multiple lines
-	DiscardLineSize  int  // Discard lines longer than this
-	RetainLinePrefix bool // Whether to retain the beginning of lines larger than DiscardLineSize
+	Follow                bool // Continue looking for new lines (tail -f)
+	MaxLineSize           int  // If non-zero, split longer lines into multiple lines
+	TruncateLineSize      int  // Truncate lines longer than this
+	DiscardTruncatedLines bool // Whether to completely discard lines longer than TruncateLineSize
 
 	// Logger, when nil, is set to tail.DefaultLogger
 	// To disable logging: set field to tail.DiscardingLogger
@@ -288,14 +288,14 @@ func (tail *Tail) readLine() (string, error) {
 	return line, err
 }
 
-// Reads the next line and returns a string up to the limit. The remainder
+// Reads the next line, and truncates it if it exceeds limit. The remainder
 // of the string is discarded. Also returns a boolean indicating whether the
-// limit was exceeded while reading.
-func (tail *Tail) readLineUpToLimit(limit int) (string, bool, error) {
+// line was truncated
+func (tail *Tail) readOrTruncateLine(limit int) (string, bool, error) {
 	var bytesread int       // Number of bytes read so far
 	var full [][]byte       // All fragments read so far
 	var reachednewline bool // Whether we reached a newline
-	var exceededlimit bool  // Whether the length of the line exceeded the limit
+	var truncated bool      // Whether the length of the line exceeded the limit
 	var err error
 
 	tail.lk.Lock()
@@ -306,9 +306,9 @@ func (tail *Tail) readLineUpToLimit(limit int) (string, bool, error) {
 			// fragment.
 			remaining := limit - (bytesread + len(frag))
 
-			// If the character after the limit was a newline, then the line
-			// didn't actually exceed the limit.
-			exceededlimit = frag[remaining+1] != '\n'
+			// If the character after the limit was a newline, then the contents
+			// of the line isn't being truncated
+			truncated = frag[remaining+1] != '\n'
 			frag = frag[:remaining]
 		}
 		bytesread += len(frag)
@@ -344,7 +344,7 @@ func (tail *Tail) readLineUpToLimit(limit int) (string, bool, error) {
 		n += copy(buf[n:], full[i])
 	}
 	line := strings.TrimRight(string(buf), "\n")
-	return line, exceededlimit, err
+	return line, truncated, err
 }
 
 func (tail *Tail) tailFileSync() {
@@ -392,20 +392,20 @@ func (tail *Tail) tailFileSync() {
 
 		var line string
 		var err error
-		var limitexceeded bool
-		if tail.Config.DiscardLineSize > 0 {
-			line, limitexceeded, err = tail.readLineUpToLimit(tail.Config.DiscardLineSize)
+		var shoulddiscard bool
+		if tail.Config.TruncateLineSize > 0 {
+			l, truncated, e := tail.readOrTruncateLine(tail.Config.TruncateLineSize)
+			line, err = l, e
+			shoulddiscard = truncated && tail.Config.DiscardTruncatedLines
 		} else {
 			line, err = tail.readLine()
 		}
 
 		// Process `line` even if err is EOF.
 		if err == nil {
-			var cooloff = false
+			var cooloff bool
 
-			// Skip sendLine if the line exceeded the limit and not configured
-			// to send the prefix
-			if !(limitexceeded && !tail.Config.RetainLinePrefix) {
+			if !shoulddiscard {
 				cooloff = !tail.sendLine(line)
 			}
 			if cooloff {
