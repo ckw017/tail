@@ -65,8 +65,10 @@ type Config struct {
 	RateLimiter *ratelimiter.LeakyBucket
 
 	// Generic IO
-	Follow      bool // Continue looking for new lines (tail -f)
-	MaxLineSize int  // If non-zero, split longer lines into multiple lines
+	Follow           bool // Continue looking for new lines (tail -f)
+	MaxLineSize      int  // If non-zero, split longer lines into multiple lines
+	DiscardLineSize  int  // Discard lines longer than this
+	RetainLinePrefix bool // Whether to retain the beginning of lines larger than DiscardLineSize
 
 	// Logger, when nil, is set to tail.DefaultLogger
 	// To disable logging: set field to tail.DiscardingLogger
@@ -284,6 +286,66 @@ func (tail *Tail) readLine() (string, error) {
 	line = strings.TrimRight(line, "\n")
 
 	return line, err
+}
+
+func (tail *Tail) readLineUpToLimit(limit int) (string, bool, error) {
+	var bytesread int       // Number of bytes read so far
+	var full [][]byte       // All fragments read so far
+	var reachednewline bool // Whether we reached a newline
+	var exceededlimit bool  // Whether the length of the line exceeded the limit
+	var err error
+
+	tail.lk.Lock()
+	for bytesread < limit {
+		frag, e := tail.reader.ReadSlice('\n')
+		if bytesread+len(frag) > limit {
+			// The next fragment puts us over the limit. Truncate the
+			// last fragment.
+			remaining := limit - (bytesread + len(frag))
+
+			// If the character after the limit was a newline, then the line
+			// didn't actually exceed the limit.
+			exceededlimit = frag[remaining+1] != '\n'
+			frag = frag[:remaining]
+		}
+		bytesread += len(frag)
+
+		// Make a copy of the buffer.
+		buf := make([]byte, len(frag))
+		copy(buf, frag)
+		full = append(full, buf)
+
+		if e == nil {
+			reachednewline = true
+			break
+		}
+		if e != bufio.ErrBufferFull { // unexpected error
+			err = e
+			break
+		}
+	}
+	if !reachednewline {
+		// Discard the remainder of the line
+		for {
+			_, e := tail.reader.ReadSlice('\n')
+			if e == nil { // reached the newline
+				break
+			}
+			if e != bufio.ErrBufferFull { // unexpected errror
+				err = e
+				break
+			}
+		}
+	}
+	tail.lk.Unlock()
+	// Copy fragments into
+	buf := make([]byte, bytesread)
+	n := 0
+	for i := range full {
+		n += copy(buf[n:], full[i])
+	}
+	line := strings.TrimRight(string(buf), "\n")
+	return line, exceededlimit, err
 }
 
 func (tail *Tail) tailFileSync() {
