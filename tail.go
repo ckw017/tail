@@ -288,6 +288,9 @@ func (tail *Tail) readLine() (string, error) {
 	return line, err
 }
 
+// Reads the next line and returns a string up to the limit. The remainder
+// of the string is discarded. Also returns a boolean indicating whether the
+// limit was exceeded while reading.
 func (tail *Tail) readLineUpToLimit(limit int) (string, bool, error) {
 	var bytesread int       // Number of bytes read so far
 	var full [][]byte       // All fragments read so far
@@ -300,7 +303,7 @@ func (tail *Tail) readLineUpToLimit(limit int) (string, bool, error) {
 		frag, e := tail.reader.ReadSlice('\n')
 		if bytesread+len(frag) > limit {
 			// The next fragment puts us over the limit. Truncate the
-			// last fragment.
+			// fragment.
 			remaining := limit - (bytesread + len(frag))
 
 			// If the character after the limit was a newline, then the line
@@ -310,7 +313,7 @@ func (tail *Tail) readLineUpToLimit(limit int) (string, bool, error) {
 		}
 		bytesread += len(frag)
 
-		// Make a copy of the buffer.
+		// Make a copy of the buffer and add it to full
 		buf := make([]byte, len(frag))
 		copy(buf, frag)
 		full = append(full, buf)
@@ -324,21 +327,17 @@ func (tail *Tail) readLineUpToLimit(limit int) (string, bool, error) {
 			break
 		}
 	}
-	if !reachednewline {
-		// Discard the remainder of the line
-		for {
-			_, e := tail.reader.ReadSlice('\n')
-			if e == nil { // reached the newline
-				break
-			}
-			if e != bufio.ErrBufferFull { // unexpected errror
-				err = e
-				break
-			}
+	if err == nil && !reachednewline {
+		// Discard the remainder of the line if there were no unexpected errors
+		// in the previous section
+		_, e := tail.reader.ReadBytes('\n')
+		if e != nil { // unexpected error
+			err = e
 		}
 	}
 	tail.lk.Unlock()
-	// Copy fragments into
+
+	// Copy fragments into a single buffer
 	buf := make([]byte, bytesread)
 	n := 0
 	for i := range full {
@@ -391,11 +390,24 @@ func (tail *Tail) tailFileSync() {
 			}
 		}
 
-		line, err := tail.readLine()
+		var line string
+		var err error
+		var limitexceeded bool
+		if tail.Config.DiscardLineSize > 0 {
+			line, limitexceeded, err = tail.readLineUpToLimit(tail.Config.DiscardLineSize)
+		} else {
+			line, err = tail.readLine()
+		}
 
 		// Process `line` even if err is EOF.
 		if err == nil {
-			cooloff := !tail.sendLine(line)
+			var cooloff = false
+
+			// Skip sendLine if the line exceeded the limit and not configured
+			// to send the prefix
+			if !(limitexceeded && !tail.Config.RetainLinePrefix) {
+				cooloff = !tail.sendLine(line)
+			}
 			if cooloff {
 				// Wait a second before seeking till the end of
 				// file when rate limit is reached.
