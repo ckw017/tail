@@ -306,8 +306,8 @@ func (tail *Tail) readOrTruncateLine(limit int) (string, bool, error) {
 			// fragment.
 			remaining := limit - (bytesread + len(frag))
 
-			// If the character after the limit was a newline, then the contents
-			// of the line isn't being truncated
+			// If the first character past the limit was a newline, then the
+			// contents of the line isn't being truncated
 			truncated = frag[remaining+1] != '\n'
 			frag = frag[:remaining]
 		}
